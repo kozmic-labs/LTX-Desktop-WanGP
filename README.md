@@ -5,6 +5,37 @@ LTX Desktop is an open-source desktop app for generating videos with LTX models 
 > **Status: Beta.** Expect breaking changes.
 > Frontend architecture is under active refactor; large UI PRs may be declined for now (see [`CONTRIBUTING.md`](docs/CONTRIBUTING.md)).
 
+## Windows WanGP Quick Start
+
+Use one of these two setup paths for local WanGP-backed generation on Windows:
+
+### 1. Wan2GP not installed yet
+
+`pnpm setup:dev:win` clones `Wan2GP/` into this repository, installs the backend dependencies, and prepares a plug-and-play local setup.
+
+```bash
+pnpm setup:dev:win
+pnpm dev
+```
+
+The desktop backend will prefer the repo-local checkout at `.\Wan2GP`.
+
+### 2. Wan2GP already installed elsewhere
+
+If you already have a working Wan2GP checkout and want LTX Desktop to reuse it, do not keep a local `.\Wan2GP` subfolder in this repo. Install only the LTX Desktop dependencies, then point `WANGP_ROOT` to the existing Wan2GP folder before starting the app.
+
+```bash
+pnpm install
+cd backend
+uv sync --extra dev
+cd ..
+pnpm dev
+```
+
+Set `WANGP_ROOT` to your existing Wan2GP folder before `pnpm dev`.
+
+If both are present, LTX Desktop uses the local `.\Wan2GP` checkout first and falls back to `WANGP_ROOT` only when no local subfolder is available.
+
 <p align="center">
   <img src="images/gen-space.png" alt="Gen Space" width="70%">
 </p>

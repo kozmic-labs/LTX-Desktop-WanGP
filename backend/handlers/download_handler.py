@@ -85,13 +85,34 @@ class DownloadHandler(StateHandlerBase):
         logger.error("Model download failed: %s", error)
         self.state.downloading_session = DownloadError(error=error)
 
+    @staticmethod
+    def _format_download_snapshot(downloaded: int, total: int, speed_mbps: float) -> str:
+        total_mb = total / (1024 * 1024) if total > 0 else 0.0
+        downloaded_mb = downloaded / (1024 * 1024)
+        percent = int((downloaded / total) * 100) if total > 0 else 0
+        filled = min(20, max(0, percent // 5))
+        bar = "#" * filled + "-" * (20 - filled)
+        return f"[{bar}] {percent:3d}% ({downloaded_mb:.1f}/{total_mb:.1f} MB at {speed_mbps:.1f} MB/s)"
+
     def _make_progress_callback(self, file_type: ModelFileType) -> Callable[[int, int], None]:
         start_time = time.monotonic()
+        last_logged_percent = -5
+        last_logged_at = start_time
+        target_name = self._config.spec_for(file_type).name
 
         def on_progress(downloaded: int, total: int) -> None:
+            nonlocal last_logged_percent, last_logged_at
             elapsed = time.monotonic() - start_time
             speed_mbps = (downloaded / elapsed / (1024 * 1024)) if elapsed > 0 else 0.0
             self.update_file_progress(file_type, downloaded, total, speed_mbps)
+            if total <= 0:
+                return
+            percent = int((downloaded / total) * 100)
+            now = time.monotonic()
+            if downloaded >= total or percent >= last_logged_percent + 5 or now - last_logged_at >= 10:
+                logger.info("Download %s %s", target_name, self._format_download_snapshot(downloaded, total, speed_mbps))
+                last_logged_percent = percent
+                last_logged_at = now
 
         return on_progress
 
@@ -228,6 +249,7 @@ class DownloadHandler(StateHandlerBase):
 
             self.update_file_progress(file_type, expected_size, expected_size, 0)
             self.complete_file(file_type)
+            logger.info("Finished downloading %s", target_name)
 
         self._models_handler.refresh_available_files()
 

@@ -305,24 +305,112 @@ export async function startPythonBackend(): Promise<void> {
       }
     }
 
-    pythonProcess.stdout?.on('data', (data: Buffer) => {
-      const output = data.toString()
-      console.log(`[Python] ${output}`)
-      for (const line of output.split('\n')) {
-        const trimmed = line.trimEnd()
-        if (trimmed) writeLog('INFO', 'Backend', trimmed)
+    let stdoutBuffer = ''
+    let stderrBuffer = ''
+    const inlineState = {
+      stdout: { active: false, width: 0, text: '' },
+      stderr: { active: false, width: 0, text: '' },
+    }
+
+    const getStreamPrefix = (stream: 'stdout' | 'stderr'): string => stream === 'stdout' ? '[Python]' : '[Python STDERR]'
+    const getStreamLevel = (stream: 'stdout' | 'stderr'): 'INFO' | 'ERROR' => stream === 'stdout' ? 'INFO' : 'ERROR'
+    const getWriter = (stream: 'stdout' | 'stderr') => stream === 'stdout' ? process.stdout : process.stderr
+
+    const finalizeInline = (stream: 'stdout' | 'stderr') => {
+      const state = inlineState[stream]
+      if (!state.active) return
+      getWriter(stream).write('\n')
+      if (state.text) {
+        writeLog(getStreamLevel(stream), 'Backend', state.text)
+        checkStarted(state.text)
       }
-      checkStarted(output)
+      state.active = false
+      state.width = 0
+      state.text = ''
+    }
+
+    const finalizeInlineIfNeeded = (stream?: 'stdout' | 'stderr') => {
+      if (stream) {
+        finalizeInline(stream)
+        return
+      }
+      finalizeInline('stdout')
+      finalizeInline('stderr')
+    }
+
+    const writeConsoleLine = (stream: 'stdout' | 'stderr', line: string) => {
+      if (!line) return
+      finalizeInlineIfNeeded()
+      getWriter(stream).write(`${getStreamPrefix(stream)} ${line}\n`)
+      writeLog(getStreamLevel(stream), 'Backend', line)
+      checkStarted(line)
+    }
+
+    const writeInlineProgress = (stream: 'stdout' | 'stderr', line: string) => {
+      if (!line) return
+      const otherStream = stream === 'stdout' ? 'stderr' : 'stdout'
+      finalizeInline(otherStream)
+      const state = inlineState[stream]
+      const rendered = `${getStreamPrefix(stream)} ${line}`
+      const pad = state.width > rendered.length ? ' '.repeat(state.width - rendered.length) : ''
+      getWriter(stream).write(`\r${rendered}${pad}`)
+      state.active = true
+      state.width = rendered.length
+      state.text = line
+      checkStarted(line)
+    }
+
+    const handlePythonOutput = (chunk: string, stream: 'stdout' | 'stderr') => {
+      let buffer = (stream === 'stdout' ? stdoutBuffer : stderrBuffer) + chunk
+      let segmentStart = 0
+
+      for (let index = 0; index < buffer.length; index += 1) {
+        const char = buffer[index]
+        if (char !== '\n' && char !== '\r') continue
+
+        const line = buffer.slice(segmentStart, index).trimEnd()
+        const isCrlf = char === '\r' && buffer[index + 1] === '\n'
+        if (char === '\r' && !isCrlf) {
+          writeInlineProgress(stream, line)
+        } else if (line) {
+          writeConsoleLine(stream, line)
+        } else {
+          finalizeInline(stream)
+        }
+
+        if (isCrlf) {
+          index += 1
+        }
+        segmentStart = index + 1
+      }
+
+      buffer = buffer.slice(segmentStart)
+      if (stream === 'stdout') {
+        stdoutBuffer = buffer
+      } else {
+        stderrBuffer = buffer
+      }
+      checkStarted(chunk)
+    }
+
+    const flushPythonOutput = () => {
+      for (const [stream, buffer] of [['stdout', stdoutBuffer], ['stderr', stderrBuffer]] as const) {
+        const line = buffer.trimEnd()
+        if (line) {
+          writeConsoleLine(stream, line)
+        }
+      }
+      finalizeInlineIfNeeded()
+      stdoutBuffer = ''
+      stderrBuffer = ''
+    }
+
+    pythonProcess.stdout?.on('data', (data: Buffer) => {
+      handlePythonOutput(data.toString(), 'stdout')
     })
 
     pythonProcess.stderr?.on('data', (data: Buffer) => {
-      const output = data.toString()
-      console.log(`[Python STDERR] ${output}`)
-      for (const line of output.split('\n')) {
-        const trimmed = line.trimEnd()
-        if (trimmed) writeLog('ERROR', 'Backend', trimmed)
-      }
-      checkStarted(output)
+      handlePythonOutput(data.toString(), 'stderr')
     })
 
     pythonProcess.on('error', (error) => {
@@ -335,6 +423,7 @@ export async function startPythonBackend(): Promise<void> {
     })
 
     pythonProcess.on('exit', async (code) => {
+      flushPythonOutput()
       logger.info(`Python backend exited with code ${code}`)
       pythonProcess = null
       backendUrl = null
